@@ -17,7 +17,8 @@ export default function Home() {
     lane: 0, laneVisual: 0, y: 0, vy: 0, rolling: 0,
     distance: 0, speed: 0.34, score: 0, coins: 0,
     items: [], particles: [], spawnAt: 12, flash: 0, shake: 0,
-    powers: { magnet: 0, shield: 0, mult: 0 }, hudTimer: 0, dust: 0
+    powers: { magnet: 0, shield: 0, mult: 0 }, hudTimer: 0, dust: 0,
+    inputBuffer: null, particlePool: [], particleQuality: 1, frameTime: 1 / 60
   });
 
   const setPhase = (p) => { phaseRef.current = p; setPhaseState(p); };
@@ -68,7 +69,8 @@ export default function Home() {
       lane: 0, laneVisual: 0, y: 0, vy: 0, rolling: 0,
       distance: 0, speed: 0.34, score: 0, coins: 0,
       items: [], particles: [], spawnAt: 10, flash: 0, shake: 0,
-      powers: { magnet: 0, shield: 0, mult: 0 }, hudTimer: 0, dust: 0
+      powers: { magnet: 0, shield: 0, mult: 0 }, hudTimer: 0, dust: 0,
+      inputBuffer: null, particlePool: [], particleQuality: 1, frameTime: 1 / 60
     };
     setScore(0); setCoins(0); setPowers({ magnet: 0, shield: 0, mult: 0 });
     playSound("start");
@@ -80,8 +82,16 @@ export default function Home() {
     if (phaseRef.current !== "playing") return;
     if (action === "left") g.lane = Math.max(-1, g.lane - 1);
     if (action === "right") g.lane = Math.min(1, g.lane + 1);
-    if (action === "jump" && g.y === 0) { g.vy = 12.5; g.dust = 1; feedback("jump"); }
-    if (action === "roll" && g.y === 0) { g.rolling = 0.65; g.dust = 1; feedback("roll"); }
+    if (action === "jump" || action === "roll") {
+      if (g.y === 0) {
+        g.inputBuffer = null;
+        if (action === "jump") { g.vy = 12.5; g.dust = 1; feedback("jump"); }
+        else { g.rolling = 0.65; g.dust = 1; feedback("roll"); }
+      } else {
+        // Remember a slightly early jump/roll and trigger it on landing.
+        g.inputBuffer = { action, remaining: 0.18 };
+      }
+    }
   }, [feedback]);
 
   useEffect(() => {
@@ -111,26 +121,64 @@ export default function Home() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
-    let raf = 0, last = performance.now(), touchX = 0, touchY = 0;
+    let raf = 0, last = performance.now(), accumulator = 0;
+    let pointerId = null, pointerX = 0, pointerY = 0, pointerStartX = 0, pointerStartY = 0, pointerHandled = false;
+    const FIXED_STEP = 1 / 60;
+    const MAX_STEPS = 6;
 
     const resize = () => {
       const r = canvas.getBoundingClientRect();
-      canvas.width = r.width * devicePixelRatio;
-      canvas.height = r.height * devicePixelRatio;
-      ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+      // Very dense mobile screens can otherwise render 3-4x more pixels than
+      // the player can perceive, which is a major source of frame drops.
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      canvas.width = Math.max(1, Math.round(r.width * dpr));
+      canvas.height = Math.max(1, Math.round(r.height * dpr));
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     };
     resize();
     window.addEventListener("resize", resize);
+    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(resize) : null;
+    resizeObserver?.observe(canvas);
 
-    const down = (e) => { touchX = e.touches[0].clientX; touchY = e.touches[0].clientY; };
-    const up = (e) => {
-      const t = e.changedTouches[0], dx = t.clientX - touchX, dy = t.clientY - touchY;
-      if (Math.max(Math.abs(dx), Math.abs(dy)) < 22) return;
-      if (Math.abs(dx) > Math.abs(dy)) move(dx > 0 ? "right" : "left");
-      else move(dy < 0 ? "jump" : "roll");
+    const pointerDown = (e) => {
+      pointerId = e.pointerId;
+      pointerX = pointerStartX = e.clientX;
+      pointerY = pointerStartY = e.clientY;
+      pointerHandled = false;
+      canvas.setPointerCapture?.(e.pointerId);
     };
-    canvas.addEventListener("touchstart", down, { passive: true });
-    canvas.addEventListener("touchend", up, { passive: true });
+    const pointerMove = (e) => {
+      if (e.pointerId !== pointerId) return;
+      const dx = e.clientX - pointerX;
+      const dy = e.clientY - pointerY;
+      const threshold = 24;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < threshold) return;
+      e.preventDefault();
+      if (Math.abs(dx) > Math.abs(dy)) {
+        // Reset the anchor after every accepted horizontal swipe so a single
+        // long gesture can reliably cross two lanes.
+        const laneSteps = Math.min(2, Math.floor(Math.abs(dx) / threshold));
+        for (let i = 0; i < laneSteps; i++) move(dx > 0 ? "right" : "left");
+        pointerX = e.clientX;
+        pointerY = e.clientY;
+      } else if (!pointerHandled) {
+        move(dy < 0 ? "jump" : "roll");
+      }
+      pointerHandled = true;
+    };
+    const pointerUp = (e) => {
+      if (e.pointerId !== pointerId) return;
+      const travel = Math.hypot(e.clientX - pointerStartX, e.clientY - pointerStartY);
+      // A quick tap is an intentionally easy jump input on small screens.
+      if (!pointerHandled && travel < 14) move("jump");
+      if (canvas.hasPointerCapture?.(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+      pointerId = null;
+    };
+    const pointerCancel = (e) => { if (e.pointerId === pointerId) pointerId = null; };
+    canvas.addEventListener("pointerdown", pointerDown);
+    canvas.addEventListener("pointermove", pointerMove, { passive: false });
+    canvas.addEventListener("pointerup", pointerUp);
+    canvas.addEventListener("pointercancel", pointerCancel);
 
     const rr = (x, y, w, h, r, fill) => {
       ctx.beginPath();
@@ -153,19 +201,21 @@ export default function Home() {
 
     const burst = (x, y, color, count = 10) => {
       const g = game.current;
-      for (let i = 0; i < count; i++) {
-        const angle = (Math.PI * 2 * i) / count + Math.random() * 0.35;
+      const emitted = Math.max(2, Math.round(count * g.particleQuality));
+      for (let i = 0; i < emitted; i++) {
+        const angle = (Math.PI * 2 * i) / emitted + Math.random() * 0.35;
         const force = 45 + Math.random() * 95;
-        g.particles.push({
-          x, y, color, life: 0.55 + Math.random() * 0.35,
-          vx: Math.cos(angle) * force, vy: Math.sin(angle) * force - 35,
-          size: 2.5 + Math.random() * 4
-        });
+        const particle = g.particlePool.pop() || {};
+        particle.x = x; particle.y = y; particle.color = color;
+        particle.life = 0.55 + Math.random() * 0.35;
+        particle.vx = Math.cos(angle) * force;
+        particle.vy = Math.sin(angle) * force - 35;
+        particle.size = 2.5 + Math.random() * 4;
+        g.particles.push(particle);
       }
     };
 
-    const draw = (dt) => {
-      const W = canvas.clientWidth, H = canvas.clientHeight;
+    const update = (dt) => {
       const g = game.current;
       const playing = phaseRef.current === "playing";
 
@@ -185,6 +235,15 @@ export default function Home() {
           if (g.y < 0) { g.y = 0; g.vy = 0; }
         }
         if (g.rolling > 0) g.rolling -= dt;
+        if (g.inputBuffer) {
+          g.inputBuffer.remaining -= dt;
+          if (g.inputBuffer.remaining <= 0) g.inputBuffer = null;
+          else if (g.y === 0) {
+            const bufferedAction = g.inputBuffer.action;
+            g.inputBuffer = null;
+            move(bufferedAction);
+          }
+        }
 
         if (g.distance > g.spawnAt) {
           const lanes = [-1, 0, 1];
@@ -205,6 +264,9 @@ export default function Home() {
             const kinds = ["magnet", "shield", "mult"];
             g.items.push({ lane: safe, z: 148, type: "power", kind: kinds[Math.floor(Math.random() * kinds.length)] });
           }
+          // All items move at the same speed, so sorting once per spawn keeps
+          // their painter order stable without allocating an array every frame.
+          g.items.sort((a, b) => b.z - a.z);
           // Keep dangerous waves farther apart than their travel distance so
           // two individually fair patterns can never combine into a dead end.
           g.spawnAt = g.distance + 78 + Math.random() * 18;
@@ -214,7 +276,9 @@ export default function Home() {
 
         for (const o of g.items) {
           const magnetCatch = o.type === "coin" && g.powers.magnet > 0 && o.z < 18 && o.z > 0;
-          if (o.hit || o.z > (magnetCatch ? 18 : 8) || o.z < 0 || (!magnetCatch && Math.abs(o.lane - g.laneVisual) > 0.38)) continue;
+          // Gameplay lane changes immediately; laneVisual is only animation.
+          // This prevents a correct swipe being rejected mid-transition.
+          if (o.hit || o.z > (magnetCatch ? 18 : 8) || o.z < 0 || (!magnetCatch && o.lane !== g.lane)) continue;
           if (o.type === "coin") {
             o.hit = true;
             g.coins++;
@@ -256,7 +320,11 @@ export default function Home() {
           }
         }
 
-        g.items = g.items.filter(o => o.z > -10 && !o.hit);
+        let itemWrite = 0;
+        for (const item of g.items) {
+          if (item.z > -10 && !item.hit) g.items[itemWrite++] = item;
+        }
+        g.items.length = itemWrite;
         g.hudTimer += dt;
         if (g.hudTimer > 0.08) {
           g.hudTimer = 0;
@@ -266,12 +334,36 @@ export default function Home() {
         }
       }
 
+      if (g.dust > 0) {
+        burst(canvas.clientWidth / 2 + g.laneVisual * canvas.clientWidth * 0.25, canvas.clientHeight * 0.82, "#d8edff", 8);
+        g.dust = 0;
+      }
+
+      let particleWrite = 0;
+      for (const particle of g.particles) {
+        particle.life -= dt;
+        particle.x += particle.vx * dt;
+        particle.y += particle.vy * dt;
+        particle.vy += 135 * dt;
+        particle.vx *= 0.985;
+        if (particle.life > 0) g.particles[particleWrite++] = particle;
+        else if (g.particlePool.length < 96) g.particlePool.push(particle);
+      }
+      g.particles.length = particleWrite;
+      g.shake = Math.max(0, g.shake - dt * 2.8);
+      g.flash = Math.max(0, g.flash - dt * 3);
+    };
+
+    const render = () => {
+      const W = canvas.clientWidth, H = canvas.clientHeight;
+      const g = game.current;
+      const playing = phaseRef.current === "playing";
+
       // Sky
       ctx.clearRect(0, 0, W, H);
       const shakeAmount = g.shake > 0 ? g.shake * 9 : 0;
       const shakeX = (Math.random() - 0.5) * shakeAmount;
       const shakeY = (Math.random() - 0.5) * shakeAmount;
-      g.shake = Math.max(0, g.shake - dt * 2.8);
       ctx.save();
       ctx.translate(shakeX, shakeY);
       const sky = ctx.createLinearGradient(0, 0, 0, H * 0.55);
@@ -351,7 +443,7 @@ export default function Home() {
       }
 
       // Items
-      g.items.slice().sort((a, b) => b.z - a.z).forEach(o => {
+      g.items.forEach(o => {
         const dimensions = o.type === "coin" ? [28, 28] :
           o.type === "power" ? [46, 46] :
           o.type === "barrier" ? [66, 56] :
@@ -417,20 +509,6 @@ export default function Home() {
         }
       });
 
-      if (g.dust > 0) {
-        burst(W / 2 + g.laneVisual * W * 0.25, H * 0.82, "#d8edff", 8);
-        g.dust = 0;
-      }
-      if (playing) {
-        for (const particle of g.particles) {
-          particle.life -= dt;
-          particle.x += particle.vx * dt;
-          particle.y += particle.vy * dt;
-          particle.vy += 135 * dt;
-          particle.vx *= 0.985;
-        }
-        g.particles = g.particles.filter(particle => particle.life > 0);
-      }
       for (const particle of g.particles) {
         ctx.globalAlpha = Math.min(1, particle.life * 2);
         ctx.fillStyle = particle.color;
@@ -545,24 +623,35 @@ export default function Home() {
       if (g.flash > 0) {
         ctx.fillStyle = `rgba(255,70,60,${g.flash})`;
         ctx.fillRect(0, 0, W, H);
-        g.flash -= dt * 3;
       }
-
-      raf = requestAnimationFrame(loop);
     };
 
     const loop = (now) => {
-      const dt = Math.min(0.033, (now - last) / 1000);
+      const frameTime = Math.min(0.1, Math.max(0, (now - last) / 1000));
       last = now;
-      draw(dt);
+      const g = game.current;
+      g.frameTime += (frameTime - g.frameTime) * 0.08;
+      g.particleQuality = g.frameTime > 0.024 ? 0.55 : g.frameTime > 0.019 ? 0.75 : 1;
+      accumulator = Math.min(accumulator + frameTime, FIXED_STEP * MAX_STEPS);
+      let steps = 0;
+      while (accumulator >= FIXED_STEP && steps < MAX_STEPS) {
+        update(FIXED_STEP);
+        accumulator -= FIXED_STEP;
+        steps++;
+      }
+      render();
+      raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
 
     return () => {
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", resize);
-      canvas.removeEventListener("touchstart", down);
-      canvas.removeEventListener("touchend", up);
+      resizeObserver?.disconnect();
+      canvas.removeEventListener("pointerdown", pointerDown);
+      canvas.removeEventListener("pointermove", pointerMove);
+      canvas.removeEventListener("pointerup", pointerUp);
+      canvas.removeEventListener("pointercancel", pointerCancel);
     };
   }, [best, feedback, move]);
 
@@ -636,3 +725,4 @@ export default function Home() {
     </div>
   );
 }
+
