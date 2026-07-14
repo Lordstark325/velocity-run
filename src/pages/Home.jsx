@@ -262,36 +262,92 @@ export default function Home() {
         }
       });
 
-      // Player
+      // Player — animated from the runner's distance so the stride accelerates
+      // naturally with the game instead of looking like a static marker.
       const px = W / 2 + g.laneVisual * W * 0.25;
       const ground = H * 0.82;
       const jump = g.y * H / 190;
       const rolling = g.rolling > 0;
+      const stride = playing ? Math.sin(g.distance * 0.55) : 0;
+      const strideLift = playing && g.y === 0 ? Math.abs(Math.cos(g.distance * 0.55)) * 2.5 : 0;
+      const laneLean = Math.max(-0.24, Math.min(0.24, (g.lane - g.laneVisual) * -0.3));
+
+      // Contact shadow gives the jump and roll poses a stronger sense of height.
+      ctx.save();
+      ctx.globalAlpha = Math.max(0.16, 0.42 - jump / 180);
+      ctx.fillStyle = "#080d1d";
+      ctx.beginPath();
+      ctx.ellipse(px, ground + 5, rolling ? 34 : 25, rolling ? 10 : 7, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      const limb = (x1, y1, x2, y2, x3, y3, color, width = 8) => {
+        ctx.strokeStyle = COLORS.ink;
+        ctx.lineWidth = width + 4;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.lineTo(x3, y3); ctx.stroke();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.lineTo(x3, y3); ctx.stroke();
+      };
 
       ctx.save();
-      ctx.translate(px, ground - jump);
-      if (rolling) { ctx.rotate(-0.8); ctx.scale(1, 0.65); }
-      ctx.strokeStyle = "#17213f";
-      ctx.lineWidth = 8;
+      ctx.translate(px, ground - jump - strideLift);
+      ctx.rotate(laneLean);
       ctx.lineCap = "round";
-      ctx.beginPath();
-      ctx.moveTo(-8, -35);
-      ctx.lineTo(-18, 0);
-      ctx.moveTo(8, -35);
-      ctx.lineTo(22, 0);
-      ctx.stroke();
-      rr(-22, -88, 44, 58, 14, COLORS.coral);
-      ctx.fillStyle = "#ffd2a6";
-      ctx.beginPath();
-      ctx.arc(0, -104, 18, 0, 7);
-      ctx.fill();
-      ctx.fillStyle = "#17213f";
-      ctx.beginPath();
-      ctx.arc(-3, -111, 20, Math.PI, 0);
-      ctx.fill();
-      ctx.fillStyle = COLORS.cyan;
-      ctx.fillRect(-21, -35, 18, 8);
-      ctx.fillRect(8, -35, 18, 8);
+
+      if (rolling) {
+        ctx.rotate(-0.38);
+        limb(-9, -43, -28, -23, -15, -4, "#34405f", 7);
+        limb(8, -40, 29, -17, 18, 0, "#34405f", 7);
+        rr(-29, -65, 58, 43, 18, COLORS.coral);
+        rr(-26, -62, 12, 32, 7, "#ff846f");
+        rr(-12, -73, 32, 22, 11, "#283451");
+        ctx.fillStyle = "#ffd2a6";
+        ctx.beginPath(); ctx.arc(17, -63, 16, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = COLORS.ink;
+        ctx.beginPath(); ctx.arc(14, -69, 17, Math.PI, Math.PI * 2); ctx.fill();
+      } else {
+        const airborne = g.y > 0;
+        const legSwing = airborne ? 0.45 : stride;
+        const armSwing = airborne ? -0.35 : -stride;
+
+        // Back leg first, then front leg to create a readable overlapping run cycle.
+        limb(-8, -35, -13 - legSwing * 7, -17, -20 - legSwing * 17, 0, "#34405f", 7);
+        limb(8, -35, 12 + legSwing * 7, -18, 19 + legSwing * 18, 0, "#425071", 8);
+        rr(-28 - legSwing * 17, -5, 20, 8, 4, COLORS.cyan);
+        rr(9 + legSwing * 18, -5, 21, 8, 4, "#43e6f3");
+
+        // Backpack and arms sit behind the hoodie.
+        rr(-28, -83, 17, 44, 8, "#25314e");
+        rr(-25, -77, 11, 22, 5, "#35c7df");
+        limb(-18, -77, -28 - armSwing * 8, -56, -23 - armSwing * 19, -35, COLORS.coral, 7);
+        limb(18, -77, 28 + armSwing * 8, -57, 23 + armSwing * 19, -36, "#ff735d", 7);
+        ctx.fillStyle = "#ffd2a6";
+        ctx.beginPath(); ctx.arc(-23 - armSwing * 19, -35, 5, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(23 + armSwing * 19, -36, 5, 0, Math.PI * 2); ctx.fill();
+
+        // Hoodie with rim light and a small logo gives the character more identity.
+        rr(-23, -91, 46, 61, 14, COLORS.coral);
+        rr(-20, -87, 9, 50, 5, "#ff806b");
+        ctx.fillStyle = COLORS.yellow;
+        ctx.beginPath(); ctx.arc(9, -61, 5, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = "#fff0d9";
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(-6, -85); ctx.lineTo(-4, -75); ctx.moveTo(6, -85); ctx.lineTo(4, -75); ctx.stroke();
+
+        // Neck, head, ears, hair and cap — all drawn from the rear camera angle.
+        rr(-7, -101, 14, 15, 5, "#efb883");
+        ctx.fillStyle = "#ffd2a6";
+        ctx.beginPath(); ctx.arc(0, -112, 20, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "#efb883";
+        ctx.beginPath(); ctx.arc(-20, -111, 4, 0, Math.PI * 2); ctx.arc(20, -111, 4, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = COLORS.ink;
+        ctx.beginPath(); ctx.arc(-2, -119, 21, Math.PI, Math.PI * 2); ctx.lineTo(18, -112); ctx.quadraticCurveTo(3, -117, -19, -111); ctx.fill();
+        rr(-19, -126, 38, 10, 5, COLORS.cyan);
+        rr(10, -121, 19, 5, 3, "#0fb0ca");
+      }
       ctx.restore();
 
       // Flash
@@ -327,14 +383,15 @@ export default function Home() {
           <span>METRO</span>
           <strong>RUSH</strong>
         </div>
-        <div className="stats">
-          <div><small>SCORE</small><b>{score}</b></div>
-          <div><small>COINS</small><b>{coins}</b></div>
-          <div><small>BEST</small><b>{best}</b></div>
+        <div className="stats" aria-label="Run statistics">
+          <div className="stat score-stat"><span className="stat-icon">⚡</span><span><small>SCORE</small><b>{String(score).padStart(6, "0")}</b></span></div>
+          <div className="stat"><span className="stat-icon coin-icon">★</span><span><small>COINS</small><b>{coins}</b></span></div>
+          <div className="stat"><span className="stat-icon best-icon">◆</span><span><small>BEST</small><b>{best.toLocaleString()}</b></span></div>
         </div>
         {phase === "playing" && (
-          <button className="pause" onClick={() => setPhase("paused")}>II</button>
+          <button className="pause" aria-label="Pause run" onClick={() => setPhase("paused")}><span>Ⅱ</span></button>
         )}
+        {phase === "playing" && <div className="run-live"><i /> RUN LIVE</div>}
       </div>
 
       {phase === "menu" && (
